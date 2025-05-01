@@ -105,18 +105,18 @@ def fill_missing_values(df):
     weather_cols = ['TEMP', 'PRES', 'DEWP', 'RAIN', 'WSPM']
     for col in weather_cols:
         # 首先尝试线性插值
-        df_filled[col] = df_filled[col].interpolate(method='linear', limit=24)
+        df_filled[col] = df_filled[col].interpolate(method='linear', limit=24).round(3)
         
         # 对于仍然存在的缺失值，使用同时段历史均值填充
         if df_filled[col].isnull().sum() > 0:
             # 创建时间特征用于匹配同期数据
             df_filled['month_day_hour'] = df_filled.index.strftime('%m-%d-%H')
-            monthly_hourly_mean = df_filled.groupby('month_day_hour')[col].transform('mean')
+            monthly_hourly_mean = df_filled.groupby('month_day_hour')[col].transform('mean').round(3)
             df_filled[col] = df_filled[col].fillna(monthly_hourly_mean)
             df_filled.drop('month_day_hour', axis=1, inplace=True)
             
             # 如果还有缺失，使用全局均值填充
-            df_filled[col] = df_filled[col].fillna(df_filled[col].mean())
+            df_filled[col] = df_filled[col].fillna(df_filled[col].mean().round(3))
     
     # 2. 污染物数据: 使用相关性高的污染物线性回归预测
     pollution_cols = ['PM2.5', 'PM10', 'SO2', 'NO2', 'CO', 'O3']
@@ -137,22 +137,23 @@ def fill_missing_values(df):
                     df_filled.loc[mask, most_correlated],
                     df_filled.loc[mask, col]
                 )
-                # 预测缺失值
+                # 预测缺失值并取三位小数
                 missing_mask = df_filled[col].isnull() & ~df_filled[most_correlated].isnull()
-                df_filled.loc[missing_mask, col] = slope * df_filled.loc[missing_mask, most_correlated] + intercept
+                pred_values = slope * df_filled.loc[missing_mask, most_correlated] + intercept
+                df_filled.loc[missing_mask, col] = pred_values.round(3)
             
             # 对剩余缺失使用线性插值
-            df_filled[col] = df_filled[col].interpolate(method='linear', limit=24)
+            df_filled[col] = df_filled[col].interpolate(method='linear', limit=24).round(3)
             
             # 如果还有缺失，使用同时段历史数据填充
             if df_filled[col].isnull().sum() > 0:
                 df_filled['month_day_hour'] = df_filled.index.strftime('%m-%d-%H')
-                monthly_hourly_mean = df_filled.groupby('month_day_hour')[col].transform('mean')
+                monthly_hourly_mean = df_filled.groupby('month_day_hour')[col].transform('mean').round(3)
                 df_filled[col] = df_filled[col].fillna(monthly_hourly_mean)
                 df_filled.drop('month_day_hour', axis=1, inplace=True)
                 
                 # 最后使用全局均值填充
-                df_filled[col] = df_filled[col].fillna(df_filled[col].mean())
+                df_filled[col] = df_filled[col].fillna(df_filled[col].mean().round(3))
     
     # 3. 风向处理: 风向是循环性的，使用前后值的角度平均
     if 'wd' in df_filled.columns and df_filled['wd'].isnull().sum() > 0:
@@ -171,7 +172,7 @@ def fill_missing_values(df):
             df_filled['wd_angle'] = df_filled['wd']
         
         # 使用线性插值填充角度
-        df_filled['wd_angle'] = df_filled['wd_angle'].interpolate(method='linear')
+        df_filled['wd_angle'] = df_filled['wd_angle'].interpolate(method='linear').round(3)
         
         # 将角度转回最接近的风向类别
         if df_filled['wd'].dtype == 'object':
@@ -193,11 +194,17 @@ def fill_missing_values(df):
             df_filled.drop('wd_angle', axis=1, inplace=True)
         else:
             # 如果风向本身就是角度，直接使用插值结果
-            df_filled['wd'] = df_filled['wd_angle']
+            df_filled['wd'] = df_filled['wd_angle'].round(3)
             df_filled.drop('wd_angle', axis=1, inplace=True)
     
     # 重置索引，保留datetime作为列
     df_filled = df_filled.reset_index()
+    
+    # 最后对所有数值列取三位小数
+    numeric_cols = df_filled.select_dtypes(include=[np.number]).columns
+    for col in numeric_cols:
+        if col not in ['No', 'year', 'month', 'day', 'hour']:  # 排除整数列
+            df_filled[col] = df_filled[col].round(3)
     
     return df_filled
 
@@ -269,43 +276,44 @@ def handle_outliers(df, columns=None, method='zscore', threshold=3, strategy='ca
         columns = df.select_dtypes(include=[np.number]).columns
     
     for col in columns:
-        if method == 'zscore':
-            # Z-score法检测异常值
-            data = df_clean[col].dropna()
-            z_scores = np.abs(stats.zscore(data))
-            outlier_indices = data[z_scores > threshold].index
-            
-            if strategy == 'cap':
-                # 截断异常值
-                upper_bound = data.mean() + threshold * data.std()
-                lower_bound = data.mean() - threshold * data.std()
-                df_clean.loc[outlier_indices, col] = df_clean.loc[outlier_indices, col].clip(lower_bound, upper_bound)
-            elif strategy == 'mean':
-                # 均值替换
-                df_clean.loc[outlier_indices, col] = data.mean()
-            elif strategy == 'median':
-                # 中位数替换
-                df_clean.loc[outlier_indices, col] = data.median()
+        if col not in ['No', 'year', 'month', 'day', 'hour']:  # 排除整数列
+            if method == 'zscore':
+                # Z-score法检测异常值
+                data = df_clean[col].dropna()
+                z_scores = np.abs(stats.zscore(data))
+                outlier_indices = data[z_scores > threshold].index
                 
-        elif method == 'iqr':
-            # IQR法检测异常值
-            Q1 = df_clean[col].quantile(0.25)
-            Q3 = df_clean[col].quantile(0.75)
-            IQR = Q3 - Q1
-            lower_bound = Q1 - threshold * IQR
-            upper_bound = Q3 + threshold * IQR
-            
-            outlier_indices = df_clean[(df_clean[col] < lower_bound) | (df_clean[col] > upper_bound)].index
-            
-            if strategy == 'cap':
-                # 截断异常值
-                df_clean.loc[outlier_indices, col] = df_clean.loc[outlier_indices, col].clip(lower_bound, upper_bound)
-            elif strategy == 'mean':
-                # 均值替换
-                df_clean.loc[outlier_indices, col] = df_clean[col].mean()
-            elif strategy == 'median':
-                # 中位数替换
-                df_clean.loc[outlier_indices, col] = df_clean[col].median()
+                if strategy == 'cap':
+                    # 截断异常值
+                    upper_bound = (data.mean() + threshold * data.std()).round(3)
+                    lower_bound = (data.mean() - threshold * data.std()).round(3)
+                    df_clean.loc[outlier_indices, col] = df_clean.loc[outlier_indices, col].clip(lower_bound, upper_bound).round(3)
+                elif strategy == 'mean':
+                    # 均值替换
+                    df_clean.loc[outlier_indices, col] = data.mean().round(3)
+                elif strategy == 'median':
+                    # 中位数替换
+                    df_clean.loc[outlier_indices, col] = data.median().round(3)
+                    
+            elif method == 'iqr':
+                # IQR法检测异常值
+                Q1 = df_clean[col].quantile(0.25)
+                Q3 = df_clean[col].quantile(0.75)
+                IQR = Q3 - Q1
+                lower_bound = (Q1 - threshold * IQR).round(3)
+                upper_bound = (Q3 + threshold * IQR).round(3)
+                
+                outlier_indices = df_clean[(df_clean[col] < lower_bound) | (df_clean[col] > upper_bound)].index
+                
+                if strategy == 'cap':
+                    # 截断异常值
+                    df_clean.loc[outlier_indices, col] = df_clean.loc[outlier_indices, col].clip(lower_bound, upper_bound).round(3)
+                elif strategy == 'mean':
+                    # 均值替换
+                    df_clean.loc[outlier_indices, col] = df_clean[col].mean().round(3)
+                elif strategy == 'median':
+                    # 中位数替换
+                    df_clean.loc[outlier_indices, col] = df_clean[col].median().round(3)
     
     return df_clean
 
@@ -350,16 +358,16 @@ def feature_engineering(df):
     
     # 3. 时间周期性特征（使用正弦和余弦变换）
     # 小时的周期性 (0-23)
-    df_fe['hour_sin'] = np.sin(2 * np.pi * df_fe['hour'] / 24)
-    df_fe['hour_cos'] = np.cos(2 * np.pi * df_fe['hour'] / 24)
+    df_fe['hour_sin'] = np.sin(2 * np.pi * df_fe['hour'] / 24).round(3)
+    df_fe['hour_cos'] = np.cos(2 * np.pi * df_fe['hour'] / 24).round(3)
     
     # 月份的周期性 (1-12)
-    df_fe['month_sin'] = np.sin(2 * np.pi * df_fe['month'] / 12)
-    df_fe['month_cos'] = np.cos(2 * np.pi * df_fe['month'] / 12)
+    df_fe['month_sin'] = np.sin(2 * np.pi * df_fe['month'] / 12).round(3)
+    df_fe['month_cos'] = np.cos(2 * np.pi * df_fe['month'] / 12).round(3)
     
     # 星期的周期性 (0-6)
-    df_fe['day_of_week_sin'] = np.sin(2 * np.pi * df_fe['day_of_week'] / 7)
-    df_fe['day_of_week_cos'] = np.cos(2 * np.pi * df_fe['day_of_week'] / 7)
+    df_fe['day_of_week_sin'] = np.sin(2 * np.pi * df_fe['day_of_week'] / 7).round(3)
+    df_fe['day_of_week_cos'] = np.cos(2 * np.pi * df_fe['day_of_week'] / 7).round(3)
     
     # 4. 风向处理
     # 如果风向是文本格式，转换为角度
@@ -376,8 +384,8 @@ def feature_engineering(df):
     
     # 风向的周期性特征
     if 'wd_angle' in df_fe.columns:
-        df_fe['wd_sin'] = np.sin(np.radians(df_fe['wd_angle']))
-        df_fe['wd_cos'] = np.cos(np.radians(df_fe['wd_angle']))
+        df_fe['wd_sin'] = np.sin(np.radians(df_fe['wd_angle'])).round(3)
+        df_fe['wd_cos'] = np.cos(np.radians(df_fe['wd_angle'])).round(3)
     
     # 5. 添加静稳天气标记
     if 'WSPM' in df_fe.columns:
@@ -393,7 +401,7 @@ def feature_engineering(df):
     
     # 6. 污染物比值特征
     if all(col in df_fe.columns for col in ['PM2.5', 'PM10']):
-        df_fe['PM_ratio'] = df_fe['PM2.5'] / df_fe['PM10']
+        df_fe['PM_ratio'] = (df_fe['PM2.5'] / df_fe['PM10']).round(3)
         # 处理可能的除零情况
         df_fe['PM_ratio'] = df_fe['PM_ratio'].replace([np.inf, -np.inf], np.nan).fillna(0)
     
@@ -416,9 +424,17 @@ def feature_engineering(df):
         # 降雨标记
         df_fe['is_raining'] = (df_fe['RAIN'] > 0).astype(int)
     
+    # 确保所有新生成的浮点数列保留3位小数
+    numeric_cols = df_fe.select_dtypes(include=[np.number]).columns
+    for col in numeric_cols:
+        if col not in ['No', 'year', 'month', 'day', 'hour', 'is_weekend', 'season', 
+                       'is_heating_period', 'is_stagnant', 'stagnant_duration',
+                       'is_extreme_cold', 'is_extreme_hot', 'is_raining']:
+            df_fe[col] = df_fe[col].round(3)
+    
     return df_fe
 
-def save_processed_data(df, output_path):
+def save_processed_data(df, output_path='../processed/processed_data.csv'):
     """
     保存处理后的数据
     
@@ -426,14 +442,35 @@ def save_processed_data(df, output_path):
         df: 数据框
         output_path: 输出路径
     """
-    # 创建输出目录（如果不存在）
-    output_dir = os.path.dirname(output_path)
-    if output_dir and not os.path.exists(output_dir):
-        os.makedirs(output_dir)
-    
-    # 保存数据
-    df.to_csv(output_path, index=False, encoding='utf-8')
-    print(f"数据已保存至: {output_path}")
+    # 确保输出目录存在
+    try:
+        output_dir = os.path.dirname(output_path)
+        if not os.path.exists(output_dir):
+            os.makedirs(output_dir, exist_ok=True)
+            print(f"创建目录: {output_dir}")
+        
+        # 确保所有数值列保留3位小数
+        numeric_cols = df.select_dtypes(include=[np.number]).columns
+        for col in numeric_cols:
+            if col not in ['No', 'year', 'month', 'day', 'hour']:  # 排除整数列
+                df[col] = df[col].round(3)
+        
+        # 保存到CSV
+        df.to_csv(output_path, index=False)
+        print(f"已保存处理后的数据到 {output_path}，数据形状: {df.shape}")
+    except PermissionError:
+        # 如果文件被占用，尝试使用不同的文件名
+        new_path = output_path.replace('.csv', f'_{datetime.now().strftime("%Y%m%d%H%M%S")}.csv')
+        print(f"无法写入 {output_path}，可能被其他程序占用。尝试保存到 {new_path}")
+        df.to_csv(new_path, index=False)
+        print(f"已保存处理后的数据到 {new_path}，数据形状: {df.shape}")
+    except Exception as e:
+        print(f"保存数据时出错: {e}")
+        # 尝试保存到当前目录
+        current_dir_path = f"./processed_data_{datetime.now().strftime('%Y%m%d%H%M%S')}.csv"
+        print(f"尝试保存到当前目录: {current_dir_path}")
+        df.to_csv(current_dir_path, index=False)
+        print(f"已保存处理后的数据到 {current_dir_path}，数据形状: {df.shape}")
 
 def main():
     # 定义输入和输出路径

@@ -41,6 +41,7 @@ def load_data(file_path):
     # 尝试加载数据
     try:
         df = pd.read_csv(file_path)
+        print(f"成功使用默认编码读取文件")
     except UnicodeDecodeError:
         # 如果默认编码失败，尝试其他常见编码
         for encoding in ['utf-8', 'gbk', 'gb2312', 'gb18030']:
@@ -50,20 +51,29 @@ def load_data(file_path):
                 break
             except UnicodeDecodeError:
                 continue
+        else:
+            raise UnicodeDecodeError("无法使用任何常见编码读取文件")
     
     # 确保有datetime列，用于时间序列分析
-    if 'datetime' not in df.columns and all(col in df.columns for col in ['year', 'month', 'day', 'hour']):
-        # df['datetime'] = pd.to_datetime(df[['year', 'month', 'day', 'hour']].assign(
-        #     hour=lambda x: x['hour'].astype(str) + ':00:00'
-        # ).agg(' '.join, axis=1), format='%Y %m %d %H:%M:%S')
-        
-        # 修复：先将所有列转换为字符串，然后再连接
-        time_cols = df[['year', 'month', 'day', 'hour']].astype(str)
-        df['datetime'] = pd.to_datetime(
-            time_cols['year'] + ' ' + time_cols['month'] + ' ' + 
-            time_cols['day'] + ' ' + time_cols['hour'] + ':00:00',
-            format='%Y %m %d %H:%M:%S'
-        )
+    if 'datetime' in df.columns:
+        # 确保datetime列是日期时间类型
+        if df['datetime'].dtype == 'object':
+            try:
+                df['datetime'] = pd.to_datetime(df['datetime'])
+                print("已将datetime列转换为日期时间类型")
+            except Exception as e:
+                print(f"转换datetime列时出错: {e}")
+    elif all(col in df.columns for col in ['year', 'month', 'day', 'hour']):
+        try:
+            # 转换为字符串再连接
+            time_cols = df[['year', 'month', 'day', 'hour']].astype(str)
+            df['datetime'] = pd.to_datetime(
+                time_cols['year'] + '-' + time_cols['month'] + '-' + 
+                time_cols['day'] + ' ' + time_cols['hour'] + ':00:00'
+            )
+            print("已从年月日时列创建datetime列")
+        except Exception as e:
+            print(f"创建datetime列时出错: {e}")
     
     print(f"数据加载完成，形状: {df.shape}")
     return df
@@ -75,8 +85,21 @@ def create_output_dir(output_dir='./figures'):
     Args:
         output_dir: 输出目录路径
     """
-    if not os.path.exists(output_dir):
-        os.makedirs(output_dir)
+    try:
+        if not os.path.exists(output_dir):
+            os.makedirs(output_dir, exist_ok=True)
+            print(f"已创建输出目录: {output_dir}")
+        else:
+            print(f"输出目录已存在: {output_dir}")
+    except Exception as e:
+        print(f"创建输出目录时出错: {e}")
+        # 如果无法创建指定目录，使用当前目录的figures子目录
+        fallback_dir = "./figures"
+        if not os.path.exists(fallback_dir):
+            os.makedirs(fallback_dir, exist_ok=True)
+        print(f"使用替代输出目录: {fallback_dir}")
+        return fallback_dir
+    
     return output_dir
 
 def plot_time_series(df, columns, title, output_dir, filename, freq='D'):
@@ -89,36 +112,62 @@ def plot_time_series(df, columns, title, output_dir, filename, freq='D'):
         title: 图表标题
         output_dir: 输出目录
         filename: 输出文件名
-        freq: 重采样频率，'D'表示日均值，'M'表示月均值
+        freq: 重采样频率，'D'表示日均值，'ME'表示月末
     """
     plt.figure(figsize=(16, 8))
     
-    # 设置时间索引
-    df_temp = df.copy()
-    df_temp.set_index('datetime', inplace=True)
+    try:
+        # 设置时间索引
+        df_temp = df.copy()
+        
+        # 确保datetime列是日期时间类型
+        if 'datetime' in df_temp.columns:
+            if df_temp['datetime'].dtype == 'object':
+                df_temp['datetime'] = pd.to_datetime(df_temp['datetime'])
+            df_temp.set_index('datetime', inplace=True)
+        else:
+            # 如果没有datetime列但有日期相关列，尝试创建
+            if all(col in df_temp.columns for col in ['year', 'month', 'day', 'hour']):
+                time_cols = df_temp[['year', 'month', 'day', 'hour']].astype(str)
+                df_temp['datetime'] = pd.to_datetime(
+                    time_cols['year'] + '-' + time_cols['month'] + '-' + 
+                    time_cols['day'] + ' ' + time_cols['hour'] + ':00:00'
+                )
+                df_temp.set_index('datetime', inplace=True)
+            else:
+                raise ValueError("数据中缺少datetime列或必要的日期时间列")
+        
+        # 修复弃用警告：将'M'替换为'ME'
+        if freq == 'M':
+            freq = 'ME'  # 使用月末频率替代
+            print("注意: 使用'ME'(月末)替代已弃用的'M'")
+        
+        # 重采样以减少噪声
+        df_resampled = df_temp[columns].resample(freq).mean()
+        
+        # 绘制时间序列
+        for col in columns:
+            plt.plot(df_resampled.index, df_resampled[col], label=col)
+        
+        plt.title(title, fontsize=16)
+        plt.xlabel('日期', fontsize=12)
+        plt.ylabel('浓度/数值', fontsize=12)
+        plt.legend(fontsize=12)
+        plt.grid(True, alpha=0.3)
+        
+        # 设置x轴日期格式
+        plt.gca().xaxis.set_major_formatter(mdates.DateFormatter('%Y-%m'))
+        plt.gca().xaxis.set_major_locator(mdates.MonthLocator(interval=3))
+        plt.xticks(rotation=45)
+        
+        # 保存图表
+        plt.tight_layout()
+        plt.savefig(os.path.join(output_dir, filename))
+        plt.close()
     
-    # 重采样以减少噪声
-    df_resampled = df_temp[columns].resample(freq).mean()
-    
-    # 绘制时间序列
-    for col in columns:
-        plt.plot(df_resampled.index, df_resampled[col], label=col)
-    
-    plt.title(title, fontsize=16)
-    plt.xlabel('日期', fontsize=12)
-    plt.ylabel('浓度/数值', fontsize=12)
-    plt.legend(fontsize=12)
-    plt.grid(True, alpha=0.3)
-    
-    # 设置x轴日期格式
-    plt.gca().xaxis.set_major_formatter(mdates.DateFormatter('%Y-%m'))
-    plt.gca().xaxis.set_major_locator(mdates.MonthLocator(interval=3))
-    plt.xticks(rotation=45)
-    
-    # 保存图表
-    plt.tight_layout()
-    plt.savefig(os.path.join(output_dir, filename))
-    plt.close()
+    except Exception as e:
+        print(f"绘制时间序列图时出错 ({filename}): {e}")
+        plt.close() # 确保关闭图表
 
 def plot_correlation_heatmap(df, columns, title, output_dir, filename):
     """
@@ -523,9 +572,500 @@ def plot_pollution_by_season(df, column, title, output_dir, filename):
     plt.savefig(os.path.join(output_dir, filename))
     plt.close()
 
+def plot_station_statistics(df, output_dir='../processed/figures'):
+    """绘制不同站点的PM2.5统计信息"""
+    
+    # 确保输出目录存在
+    os.makedirs(output_dir, exist_ok=True)
+    
+    # 按站点分组计算统计量
+    station_stats = df.groupby('station').agg({
+        'PM2.5': ['mean', 'std', 'min', 'max', 'median']
+    }).reset_index()
+    
+    # 构造DataFrame便于绘图
+    station_stats.columns = ['station', 'mean', 'std', 'min', 'max', 'median']
+    
+    # 保留3位小数
+    for col in ['mean', 'std', 'min', 'max', 'median']:
+        station_stats[col] = station_stats[col].round(3)
+    
+    # 绘制均值柱状图
+    plt.figure(figsize=(12, 6))
+    bars = plt.bar(station_stats['station'], station_stats['mean'], yerr=station_stats['std'], 
+            capsize=5, color='skyblue', alpha=0.7)
+    
+    # 在柱状图上标注均值
+    for i, bar in enumerate(bars):
+        plt.text(bar.get_x() + bar.get_width()/2., bar.get_height() + 5, 
+                f"{station_stats['mean'].iloc[i]:.3f}", 
+                ha='center', va='bottom', rotation=0)
+    
+    plt.title('不同监测站点PM2.5均值对比', fontsize=14)
+    plt.xlabel('监测站点')
+    plt.ylabel('PM2.5均值 (μg/m³)')
+    plt.xticks(rotation=45)
+    plt.tight_layout()
+    plt.savefig(f"{output_dir}/station_pm25_mean.png", dpi=300)
+    plt.close()
+    
+    # 绘制箱线图
+    plt.figure(figsize=(14, 8))
+    station_data = {station: df[df['station'] == station]['PM2.5'] for station in df['station'].unique()}
+    plt.boxplot([station_data[station] for station in df['station'].unique()], 
+                labels=df['station'].unique(), showfliers=False)
+    
+    # 添加中位数标注
+    for i, station in enumerate(df['station'].unique(), 1):
+        median_val = station_data[station].median().round(3)
+        plt.text(i, median_val + 5, f"{median_val:.3f}", 
+                ha='center', va='bottom', fontsize=9)
+    
+    plt.title('不同监测站点PM2.5分布箱线图', fontsize=14)
+    plt.ylabel('PM2.5浓度 (μg/m³)')
+    plt.xticks(rotation=45)
+    plt.grid(axis='y', linestyle='--', alpha=0.7)
+    plt.tight_layout()
+    plt.savefig(f"{output_dir}/station_pm25_boxplot.png", dpi=300)
+    plt.close()
+    
+    # 保存统计信息到CSV
+    station_stats.to_csv(f"{output_dir}/station_pm25_stats.csv", index=False)
+    print(f"已保存站点统计图表到 {output_dir}")
+
+
+def plot_temporal_patterns(df, output_dir='../processed/figures'):
+    """绘制PM2.5的时间变化模式"""
+    
+    # 确保输出目录存在
+    os.makedirs(output_dir, exist_ok=True)
+    
+    # 1. 按小时统计PM2.5均值
+    hourly_avg = df.groupby('hour')['PM2.5'].mean().round(3).reset_index()
+    
+    plt.figure(figsize=(12, 6))
+    plt.plot(hourly_avg['hour'], hourly_avg['PM2.5'], 'o-', linewidth=2, markersize=8)
+    
+    # 添加数值标签
+    for i, val in enumerate(hourly_avg['PM2.5']):
+        plt.text(hourly_avg['hour'][i], val + 2, f"{val:.3f}", ha='center', va='bottom', fontsize=9)
+    
+    plt.title('PM2.5浓度的小时变化模式', fontsize=14)
+    plt.xlabel('小时 (时)')
+    plt.ylabel('PM2.5平均浓度 (μg/m³)')
+    plt.xticks(range(0, 24, 2))
+    plt.grid(True, alpha=0.3)
+    plt.tight_layout()
+    plt.savefig(f"{output_dir}/pm25_hourly_pattern.png", dpi=300)
+    plt.close()
+    
+    # 2. 按月统计PM2.5均值
+    monthly_avg = df.groupby('month')['PM2.5'].mean().round(3).reset_index()
+    
+    plt.figure(figsize=(12, 6))
+    bars = plt.bar(monthly_avg['month'], monthly_avg['PM2.5'], color='salmon', alpha=0.7)
+    
+    # 添加数值标签
+    for i, bar in enumerate(bars):
+        plt.text(bar.get_x() + bar.get_width()/2., bar.get_height() + 2, 
+                f"{monthly_avg['PM2.5'].iloc[i]:.3f}", 
+                ha='center', va='bottom')
+    
+    plt.title('PM2.5浓度的月度变化', fontsize=14)
+    plt.xlabel('月份')
+    plt.ylabel('PM2.5平均浓度 (μg/m³)')
+    plt.xticks(range(1, 13))
+    plt.grid(axis='y', linestyle='--', alpha=0.3)
+    plt.tight_layout()
+    plt.savefig(f"{output_dir}/pm25_monthly_pattern.png", dpi=300)
+    plt.close()
+    
+    # 3. 按星期统计PM2.5均值
+    weekly_avg = df.groupby('day_of_week')['PM2.5'].mean().round(3).reset_index()
+    day_names = ['周一', '周二', '周三', '周四', '周五', '周六', '周日']
+    weekly_avg['day_name'] = weekly_avg['day_of_week'].apply(lambda x: day_names[x])
+    
+    plt.figure(figsize=(10, 6))
+    bars = plt.bar(weekly_avg['day_name'], weekly_avg['PM2.5'], color='lightgreen', alpha=0.7)
+    
+    # 添加数值标签
+    for i, bar in enumerate(bars):
+        plt.text(bar.get_x() + bar.get_width()/2., bar.get_height() + 2, 
+                f"{weekly_avg['PM2.5'].iloc[i]:.3f}", 
+                ha='center', va='bottom')
+    
+    plt.title('PM2.5浓度的星期变化', fontsize=14)
+    plt.xlabel('星期')
+    plt.ylabel('PM2.5平均浓度 (μg/m³)')
+    plt.grid(axis='y', linestyle='--', alpha=0.3)
+    plt.tight_layout()
+    plt.savefig(f"{output_dir}/pm25_weekly_pattern.png", dpi=300)
+    plt.close()
+    
+    # 4. 按季节统计PM2.5均值
+    season_avg = df.groupby('season')['PM2.5'].mean().round(3).reset_index()
+    season_names = ['春', '夏', '秋', '冬']
+    season_avg['season_name'] = season_avg['season'].apply(lambda x: season_names[x-1])
+    
+    plt.figure(figsize=(10, 6))
+    bars = plt.bar(season_avg['season_name'], season_avg['PM2.5'], color='lightblue', alpha=0.7)
+    
+    # 添加数值标签
+    for i, bar in enumerate(bars):
+        plt.text(bar.get_x() + bar.get_width()/2., bar.get_height() + 2, 
+                f"{season_avg['PM2.5'].iloc[i]:.3f}", 
+                ha='center', va='bottom')
+    
+    plt.title('PM2.5浓度的季节变化', fontsize=14)
+    plt.xlabel('季节')
+    plt.ylabel('PM2.5平均浓度 (μg/m³)')
+    plt.grid(axis='y', linestyle='--', alpha=0.3)
+    plt.tight_layout()
+    plt.savefig(f"{output_dir}/pm25_seasonal_pattern.png", dpi=300)
+    plt.close()
+    
+    # 保存时间模式统计数据
+    temporal_stats = pd.DataFrame({
+        '小时': hourly_avg['hour'].tolist() + [None] * (12 - len(hourly_avg)),
+        '小时均值': hourly_avg['PM2.5'].tolist() + [None] * (12 - len(hourly_avg)),
+        '月份': monthly_avg['month'].tolist(),
+        '月均值': monthly_avg['PM2.5'].tolist(),
+        '星期': weekly_avg['day_name'].tolist() + [None] * (12 - len(weekly_avg)),
+        '星期均值': weekly_avg['PM2.5'].tolist() + [None] * (12 - len(weekly_avg)),
+        '季节': season_avg['season_name'].tolist() + [None] * (12 - len(season_avg)),
+        '季节均值': season_avg['PM2.5'].tolist() + [None] * (12 - len(season_avg))
+    })
+    
+    temporal_stats.to_csv(f"{output_dir}/temporal_pattern_stats.csv", index=False)
+    print(f"已保存时间模式图表到 {output_dir}")
+
+
+def plot_meteorological_influence(df, output_dir='../processed/figures'):
+    """绘制气象因素对PM2.5的影响"""
+    
+    # 确保输出目录存在
+    os.makedirs(output_dir, exist_ok=True)
+    
+    # 1. TEMP与PM2.5关系的散点图
+    plt.figure(figsize=(10, 6))
+    plt.scatter(df['TEMP'], df['PM2.5'], alpha=0.3, s=10)
+    
+    # 添加趋势线
+    z = np.polyfit(df['TEMP'], df['PM2.5'], 1)
+    p = np.poly1d(z)
+    trend_x = np.linspace(df['TEMP'].min(), df['TEMP'].max(), 100)
+    plt.plot(trend_x, p(trend_x), "r--", linewidth=2)
+    
+    # 添加相关系数
+    corr = df[['TEMP', 'PM2.5']].corr().iloc[0, 1].round(3)
+    plt.annotate(f"相关系数: {corr:.3f}", xy=(0.05, 0.95), xycoords='axes fraction',
+                 fontsize=12, bbox=dict(boxstyle="round,pad=0.3", fc="white", ec="gray", alpha=0.8))
+    
+    plt.title('温度与PM2.5的关系', fontsize=14)
+    plt.xlabel('温度 (°C)')
+    plt.ylabel('PM2.5浓度 (μg/m³)')
+    plt.grid(True, alpha=0.3)
+    plt.tight_layout()
+    plt.savefig(f"{output_dir}/pm25_vs_temperature.png", dpi=300)
+    plt.close()
+    
+    # 2. WSPM（风速）与PM2.5关系的散点图
+    plt.figure(figsize=(10, 6))
+    plt.scatter(df['WSPM'], df['PM2.5'], alpha=0.3, s=10)
+    
+    # 添加趋势线
+    z = np.polyfit(df['WSPM'], df['PM2.5'], 1)
+    p = np.poly1d(z)
+    trend_x = np.linspace(df['WSPM'].min(), df['WSPM'].max(), 100)
+    plt.plot(trend_x, p(trend_x), "r--", linewidth=2)
+    
+    # 添加相关系数
+    corr = df[['WSPM', 'PM2.5']].corr().iloc[0, 1].round(3)
+    plt.annotate(f"相关系数: {corr:.3f}", xy=(0.05, 0.95), xycoords='axes fraction',
+                 fontsize=12, bbox=dict(boxstyle="round,pad=0.3", fc="white", ec="gray", alpha=0.8))
+    
+    plt.title('风速与PM2.5的关系', fontsize=14)
+    plt.xlabel('风速 (m/s)')
+    plt.ylabel('PM2.5浓度 (μg/m³)')
+    plt.grid(True, alpha=0.3)
+    plt.tight_layout()
+    plt.savefig(f"{output_dir}/pm25_vs_wind_speed.png", dpi=300)
+    plt.close()
+    
+    # 3. 湿度（DEWP）与PM2.5关系的散点图
+    plt.figure(figsize=(10, 6))
+    plt.scatter(df['DEWP'], df['PM2.5'], alpha=0.3, s=10)
+    
+    # 添加趋势线
+    z = np.polyfit(df['DEWP'], df['PM2.5'], 1)
+    p = np.poly1d(z)
+    trend_x = np.linspace(df['DEWP'].min(), df['DEWP'].max(), 100)
+    plt.plot(trend_x, p(trend_x), "r--", linewidth=2)
+    
+    # 添加相关系数
+    corr = df[['DEWP', 'PM2.5']].corr().iloc[0, 1].round(3)
+    plt.annotate(f"相关系数: {corr:.3f}", xy=(0.05, 0.95), xycoords='axes fraction',
+                 fontsize=12, bbox=dict(boxstyle="round,pad=0.3", fc="white", ec="gray", alpha=0.8))
+    
+    plt.title('露点温度与PM2.5的关系', fontsize=14)
+    plt.xlabel('露点温度 (°C)')
+    plt.ylabel('PM2.5浓度 (μg/m³)')
+    plt.grid(True, alpha=0.3)
+    plt.tight_layout()
+    plt.savefig(f"{output_dir}/pm25_vs_dew_point.png", dpi=300)
+    plt.close()
+    
+    # 4. 气压（PRES）与PM2.5关系的散点图
+    plt.figure(figsize=(10, 6))
+    plt.scatter(df['PRES'], df['PM2.5'], alpha=0.3, s=10)
+    
+    # 添加趋势线
+    z = np.polyfit(df['PRES'], df['PM2.5'], 1)
+    p = np.poly1d(z)
+    trend_x = np.linspace(df['PRES'].min(), df['PRES'].max(), 100)
+    plt.plot(trend_x, p(trend_x), "r--", linewidth=2)
+    
+    # 添加相关系数
+    corr = df[['PRES', 'PM2.5']].corr().iloc[0, 1].round(3)
+    plt.annotate(f"相关系数: {corr:.3f}", xy=(0.05, 0.95), xycoords='axes fraction',
+                 fontsize=12, bbox=dict(boxstyle="round,pad=0.3", fc="white", ec="gray", alpha=0.8))
+    
+    plt.title('气压与PM2.5的关系', fontsize=14)
+    plt.xlabel('气压 (hPa)')
+    plt.ylabel('PM2.5浓度 (μg/m³)')
+    plt.grid(True, alpha=0.3)
+    plt.tight_layout()
+    plt.savefig(f"{output_dir}/pm25_vs_pressure.png", dpi=300)
+    plt.close()
+    
+    # 保存气象因素相关性统计
+    meteo_corr = df[['PM2.5', 'TEMP', 'PRES', 'DEWP', 'RAIN', 'WSPM']].corr()['PM2.5'].round(3)
+    meteo_corr.to_csv(f"{output_dir}/meteorological_correlations.csv")
+    print(f"已保存气象因素影响图表到 {output_dir}")
+
+
+def plot_pollution_rose(df, output_dir='../processed/figures'):
+    """绘制污染玫瑰图（PM2.5随风向的变化）"""
+    
+    # 确保输出目录存在
+    os.makedirs(output_dir, exist_ok=True)
+    
+    # 检查是否有风向角度列
+    if 'wd_angle' not in df.columns:
+        print("缺少风向角度数据，无法绘制污染玫瑰图")
+        return
+    
+    # 创建风向bins（按16个方位划分）
+    bins = np.arange(0, 361, 22.5)
+    labels = ['N', 'NNE', 'NE', 'ENE', 'E', 'ESE', 'SE', 'SSE', 
+              'S', 'SSW', 'SW', 'WSW', 'W', 'WNW', 'NW', 'NNW']
+    
+    # 添加风向分类
+    df_wind = df.copy()
+    df_wind['wind_dir_cat'] = pd.cut(df_wind['wd_angle'], bins=bins, labels=labels, include_lowest=True)
+    
+    # 按风向计算PM2.5的平均值
+    wind_pm25 = df_wind.groupby('wind_dir_cat')['PM2.5'].mean().round(3)
+    
+    # 转换为径向图的数据格式
+    angles = np.linspace(0, 2*np.pi, len(labels), endpoint=False).tolist()
+    values = wind_pm25.tolist()
+    # 闭合图形
+    angles.append(angles[0])
+    values.append(values[0])
+    
+    # 创建污染玫瑰图
+    fig, ax = plt.subplots(figsize=(10, 8), subplot_kw=dict(polar=True))
+    ax.plot(angles, values, linewidth=2)
+    ax.fill(angles, values, alpha=0.25)
+    
+    # 添加数值标签
+    for i, (angle, value) in enumerate(zip(angles[:-1], values[:-1])):
+        ha = 'left' if 0 <= angle < np.pi else 'right'
+        ax.annotate(f"{value:.3f}", xy=(angle, value + max(values)*0.05), 
+                    ha=ha, va='center', fontsize=8)
+    
+    # 设置图表属性
+    ax.set_xticks(angles[:-1])
+    ax.set_xticklabels(labels)
+    ax.set_title('风向与PM2.5浓度玫瑰图', fontsize=14, pad=20)
+    ax.grid(True)
+    
+    plt.tight_layout()
+    plt.savefig(f"{output_dir}/pm25_wind_rose.png", dpi=300)
+    plt.close()
+    
+    # 保存风向统计
+    wind_stats = pd.DataFrame({
+        '风向': labels,
+        'PM2.5均值': wind_pm25.values.round(3)
+    })
+    wind_stats.to_csv(f"{output_dir}/wind_direction_pm25.csv", index=False)
+    print(f"已保存污染玫瑰图到 {output_dir}")
+
+
+def visualize_station_distribution(df, output_dir='../processed/figures'):
+    """可视化不同站点的空间分布"""
+    
+    # 确保输出目录存在
+    os.makedirs(output_dir, exist_ok=True)
+    
+    # 站点经纬度数据 (模拟数据，实际应使用真实经纬度)
+    # 由于题目中没有给出站点经纬度，我们使用模拟数据进行演示
+    station_locations = {
+        'Dongsi': {'lat': 39.929, 'lon': 116.417},
+        'Dongsihuan': {'lat': 39.915, 'lon': 116.434},
+        'Nongzhanguan': {'lat': 39.937, 'lon': 116.461},
+        'US Embassy': {'lat': 39.954, 'lon': 116.466},
+        'Wanliu': {'lat': 39.987, 'lon': 116.287},
+        'Wanshouxigong': {'lat': 39.878, 'lon': 116.352},
+        'Xizhimenbei': {'lat': 39.954, 'lon': 116.349},
+        'Yungang': {'lat': 39.824, 'lon': 116.146},
+        'Zhiwuyuan': {'lat': 39.941, 'lon': 116.207},
+        'Changping': {'lat': 40.217, 'lon': 116.230},
+        'Dingling': {'lat': 40.290, 'lon': 116.220},
+        'Shunyi': {'lat': 40.125, 'lon': 116.655},
+        'Huairou': {'lat': 40.330, 'lon': 116.628}
+    }
+    
+    # 计算每个站点的PM2.5平均值
+    station_pm25 = df.groupby('station')['PM2.5'].mean().round(3)
+    
+    # 创建站点数据框
+    stations_df = pd.DataFrame(station_locations).T.reset_index()
+    stations_df.columns = ['station', 'lat', 'lon']
+    stations_df = stations_df.merge(station_pm25.reset_index(), on='station')
+    
+    # 绘制站点分布图
+    plt.figure(figsize=(12, 10))
+    
+    # 背景地图（简化版，实际应使用地图API）
+    plt.scatter(stations_df['lon'], stations_df['lat'], 
+                c=stations_df['PM2.5'], cmap='YlOrRd', 
+                s=200, alpha=0.7, edgecolors='black', zorder=3)
+    
+    # 添加站点名称标签
+    for i, row in stations_df.iterrows():
+        plt.annotate(f"{row['station']}\n({row['PM2.5']:.3f})", 
+                     (row['lon'], row['lat']),
+                     xytext=(5, 5), textcoords='offset points',
+                     fontsize=8, bbox=dict(boxstyle="round,pad=0.3", fc="white", ec="gray", alpha=0.8))
+    
+    plt.colorbar(label='PM2.5平均浓度 (μg/m³)')
+    plt.title('北京市监测站点PM2.5空间分布', fontsize=14)
+    plt.xlabel('经度')
+    plt.ylabel('纬度')
+    plt.grid(True, alpha=0.3)
+    plt.tight_layout()
+    plt.savefig(f"{output_dir}/station_spatial_distribution.png", dpi=300)
+    plt.close()
+    
+    # 保存站点位置和PM2.5数据
+    stations_df.to_csv(f"{output_dir}/station_locations_pm25.csv", index=False)
+    print(f"已保存站点分布图到 {output_dir}")
+
+
+def run_visualization(data_path='../processed/processed_data.csv', output_dir='../processed/figures'):
+    """运行所有可视化函数"""
+    
+    print("开始数据可视化...")
+    
+    # 检查输入文件是否存在，如果不存在尝试其他位置
+    if not os.path.exists(data_path):
+        print(f"输入文件不存在: {data_path}")
+        # 尝试在当前目录查找
+        alt_data_path = "./processed_data.csv"
+        if os.path.exists(alt_data_path):
+            data_path = alt_data_path
+            print(f"使用替代输入文件: {data_path}")
+        else:
+            print("无法找到输入文件，请确保已运行数据预处理脚本")
+            return None
+    
+    # 确保输出目录存在
+    output_dir = create_output_dir(output_dir)
+    
+    try:
+        # 加载处理后的数据
+        df = pd.read_csv(data_path)
+        print(f"数据已加载，形状: {df.shape}")
+        
+        # 如果数据中包含datetime列但格式是字符串，转换为日期时间类型
+        if 'datetime' in df.columns and df['datetime'].dtype == 'object':
+            df['datetime'] = pd.to_datetime(df['datetime'])
+            print("已将datetime列转换为日期时间类型")
+        elif 'datetime' not in df.columns and all(col in df.columns for col in ['year', 'month', 'day', 'hour']):
+            # 创建datetime列
+            time_cols = df[['year', 'month', 'day', 'hour']].astype(str)
+            df['datetime'] = pd.to_datetime(
+                time_cols['year'] + '-' + time_cols['month'] + '-' + 
+                time_cols['day'] + ' ' + time_cols['hour'] + ':00:00'
+            )
+            print("已从年月日时列创建datetime列")
+        
+        # 运行各个可视化函数，每个函数都加入异常处理
+        try:
+            if 'station' in df.columns:
+                plot_station_statistics(df, output_dir)
+                visualize_station_distribution(df, output_dir)
+            else:
+                print("数据中缺少station列，无法绘制站点相关图表")
+        except Exception as e:
+            print(f"绘制站点统计图表时出错: {e}")
+        
+        try:
+            plot_temporal_patterns(df, output_dir)
+        except Exception as e:
+            print(f"绘制时间模式图表时出错: {e}")
+        
+        try:
+            plot_meteorological_influence(df, output_dir)
+        except Exception as e:
+            print(f"绘制气象影响图表时出错: {e}")
+        
+        try:
+            # 使用更详细的相关性热力图函数，传递所有主要特征
+            columns = ['PM2.5', 'PM10', 'SO2', 'NO2', 'CO', 'O3', 
+                      'TEMP', 'PRES', 'DEWP', 'RAIN', 'WSPM']
+            # 添加可能存在的周期性特征
+            if 'hour_sin' in df.columns and 'hour_cos' in df.columns:
+                columns.extend(['hour_sin', 'hour_cos', 'month_sin', 'month_cos'])
+            plot_correlation_heatmap(df, columns, "特征相关性热力图", 
+                                    output_dir, "correlation_heatmap.png")
+        except Exception as e:
+            print(f"绘制相关性热力图时出错: {e}")
+        
+        try:
+            if 'wd_angle' in df.columns:
+                plot_pollution_rose(df, output_dir)
+            else:
+                print("数据中缺少wd_angle列，无法绘制污染玫瑰图")
+        except Exception as e:
+            print(f"绘制污染玫瑰图时出错: {e}")
+        
+        print("数据可视化完成！所有图表已保存到", output_dir)
+        
+        return df
+    except Exception as e:
+        print(f"运行可视化过程中发生错误: {e}")
+        return None
+
 def main():
     # 定义输入和输出路径
     input_file = "../processed/processed_data.csv"  # 从processed文件夹读取预处理后的数据
+    
+    # 检查输入文件是否存在，如果不存在尝试其他位置
+    if not os.path.exists(input_file):
+        print(f"输入文件不存在: {input_file}")
+        # 尝试在当前目录查找
+        alt_input_file = "./processed_data.csv"
+        if os.path.exists(alt_input_file):
+            input_file = alt_input_file
+            print(f"使用替代输入文件: {input_file}")
+        else:
+            print("无法找到输入文件，请确保已运行数据预处理脚本")
+            return
+    
     output_dir = create_output_dir('../processed/figures')  # 将图表保存到processed/figures目录下
     
     # 1. 加载数据
@@ -547,7 +1087,7 @@ def main():
     
     # 3. 绘制PM2.5时间序列的月均值和日均值
     plot_time_series(df, ['PM2.5'], 'PM2.5浓度时间序列 (月均值)', 
-                    output_dir, 'pm25_monthly_time_series.png', freq='M')
+                    output_dir, 'pm25_monthly_time_series.png', freq='ME')
     
     plot_time_series(df, ['PM2.5'], 'PM2.5浓度时间序列 (日均值)', 
                     output_dir, 'pm25_daily_time_series.png', freq='D')
