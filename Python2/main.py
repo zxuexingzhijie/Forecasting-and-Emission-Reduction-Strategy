@@ -237,7 +237,13 @@ def run_model_training(X_train, y_train, X_test, y_test, processed_train, proces
         X_test_with_dt = X_test.copy()
         if 'datetime' in processed_test.columns:
             X_test_with_dt['datetime'] = processed_test['datetime']
-        mt.visualize_predictions(X_test_with_dt, y_test, tuned_model, train_cols=train_cols)
+        mt.visualize_predictions(
+            test_data=X_test_with_dt,
+            y_test=y_test,
+            model=tuned_model,
+            train_cols=train_cols,
+            output_dir="./processed2/figures"
+        )
         
         # 使用的最终模型
         final_model = tuned_model
@@ -258,7 +264,13 @@ def run_model_training(X_train, y_train, X_test, y_test, processed_train, proces
         X_test_with_dt = X_test.copy()
         if 'datetime' in processed_test.columns:
             X_test_with_dt['datetime'] = processed_test['datetime']
-        mt.visualize_predictions(X_test_with_dt, y_test, best_model, train_cols=train_cols)
+        mt.visualize_predictions(
+            test_data=X_test_with_dt,
+            y_test=y_test,
+            model=best_model,
+            train_cols=train_cols,
+            output_dir="./processed2/figures"
+        )
         
         # 使用的最终模型
         final_model = best_model

@@ -363,7 +363,7 @@ def analyze_static_weather_performance(X_test, y_test, model,
         plt.figure(figsize=(12, 6))
         sns.boxplot(x='is_stagnant', y='error', data=analysis_df)
         plt.xlabel('是否静稳天气 (1=是, 0=否)')
-        plt.ylabel('绝对误差 (μg/m³)')
+        plt.ylabel('绝对误差 (ug/m3)')
         plt.title('静稳天气与非静稳天气下的预测误差分布')
         plt.grid(alpha=0.3)
         plt.tight_layout()
@@ -377,7 +377,7 @@ def analyze_static_weather_performance(X_test, y_test, model,
         plt.figure(figsize=(14, 7))
         sns.boxplot(x='pm25_bin', y='error', hue='is_stagnant', data=analysis_df)
         plt.xlabel('PM2.5浓度等级')
-        plt.ylabel('绝对误差 (μg/m³)')
+        plt.ylabel('绝对误差 (ug/m3)')
         plt.title('不同PM2.5浓度等级下的预测误差对比')
         plt.legend(title='是否静稳天气', labels=['否', '是'])
         plt.grid(alpha=0.3)
@@ -413,134 +413,276 @@ def analyze_static_weather_performance(X_test, y_test, model,
         print(f"警告: 在特征中未找到静稳天气列 '{is_stagnant_col}'，无法分析静稳天气性能")
         return None
 
-def visualize_predictions(X_test, y_test, model, datetime_col='datetime', output_dir="./processed2/figures", train_cols=None):
-    """
-    可视化预测结果
-    
-    Args:
-        X_test: 测试特征
-        y_test: 测试标签
-        model: 训练好的模型
-        datetime_col: 日期时间列
-        output_dir: 输出目录
-        train_cols: 训练时使用的特征列名
-    """
-    # 确保输出目录存在
+def visualize_predictions(test_data, y_test, model, train_cols=None, output_dir='output'):
+    """可视化预测结果"""
     os.makedirs(output_dir, exist_ok=True)
     
-    # 保存datetime列，稍后用于可视化
-    datetime_values = None
-    if datetime_col in X_test.columns:
-        datetime_values = X_test[datetime_col].copy()
-        X_test_pred = X_test.drop(columns=[datetime_col]).copy()
+    # 获取预测值
+    if train_cols is None:
+        X_test = test_data.copy()
     else:
-        X_test_pred = X_test.copy()
+        X_test = test_data[train_cols].copy()
     
-    # 确保测试集特征与训练时一致
-    if train_cols is not None:
-        # 添加缺失的列
-        missing_cols = set(train_cols) - set(X_test_pred.columns)
-        for col in missing_cols:
-            X_test_pred[col] = 0
-        
-        # 删除多余的列
-        extra_cols = set(X_test_pred.columns) - set(train_cols)
-        if extra_cols:
-            X_test_pred = X_test_pred.drop(columns=extra_cols)
-        
-        # 按训练时的列顺序排列
-        X_test_pred = X_test_pred[train_cols]
+    y_pred = model.predict(X_test)
     
-    # 预测
-    y_pred = model.predict(X_test_pred)
-    
-    # 构建可视化用数据框
+    # 创建可视化数据框
     vis_df = pd.DataFrame({
+        'datetime': test_data['datetime'],
         'true': y_test,
         'pred': y_pred,
         'error': y_pred - y_test,
-        'abs_error': np.abs(y_pred - y_test)
+        'abs_error': np.abs(y_pred - y_test),
+        'is_stagnant': test_data['is_stagnant'] if 'is_stagnant' in test_data.columns else 0
     })
     
-    # 如果有日期时间值，添加到可视化数据框
-    if datetime_values is not None:
-        vis_df['datetime'] = datetime_values
-        vis_df = vis_df.sort_values('datetime')
+    # 定义月份颜色 - 提前定义，避免引用错误
+    month_colors = plt.cm.viridis(np.linspace(0.1, 0.9, 12))
     
     # 1. 真实值vs预测值散点图
-    plt.figure(figsize=(10, 8))
-    plt.scatter(vis_df['true'], vis_df['pred'], alpha=0.5)
+    plt.figure(figsize=(14, 12))
+    
+    # 散点图使用透明度和颜色渐变以展示密度
+    density_cmap = plt.cm.viridis
+    scatter = plt.scatter(vis_df['true'], vis_df['pred'], 
+                         alpha=0.6, 
+                         c=vis_df['abs_error'], 
+                         cmap=density_cmap,
+                         s=30,
+                         edgecolor='white',
+                         linewidth=0.5)
+    
+    # 添加线性回归拟合线
+    z = np.polyfit(vis_df['true'], vis_df['pred'], 1)
+    p = np.poly1d(z)
+    x_range = np.linspace(vis_df['true'].min(), vis_df['true'].max(), 100)
+    plt.plot(x_range, p(x_range), 'r--', linewidth=2, 
+             label=f'拟合线: y={z[0]:.3f}x+{z[1]:.3f}')
     
     # 添加对角线
     max_val = max(vis_df['true'].max(), vis_df['pred'].max())
     min_val = min(vis_df['true'].min(), vis_df['pred'].min())
-    plt.plot([min_val, max_val], [min_val, max_val], 'r--')
+    plt.plot([min_val, max_val], [min_val, max_val], 'g-', 
+             linewidth=2, label='理想预测线 (y=x)')
     
-    plt.xlabel('真实值 (μg/m³)')
-    plt.ylabel('预测值 (μg/m³)')
-    plt.title('PM2.5预测值vs真实值')
-    plt.grid(alpha=0.3)
-    plt.tight_layout()
-    plt.savefig(f"{output_dir}/pred_vs_true_scatter.png", dpi=300)
+    # 添加颜色条
+    cbar = plt.colorbar(scatter)
+    cbar.set_label('预测误差 (ug/m3)', fontsize=12, labelpad=10)
+    
+    # 设置轴标签和标题
+    plt.xlabel('真实值 (ug/m3)', fontsize=14, labelpad=10, color='#333333')
+    plt.ylabel('预测值 (ug/m3)', fontsize=14, labelpad=10, color='#333333')
+    plt.title('PM2.5预测值与真实值对比', fontsize=18, pad=20, fontweight='bold', color='#333333')
+    
+    # 添加图例和网格
+    plt.legend(fontsize=12, loc='upper left')
+    plt.grid(alpha=0.3, linestyle='--')
+    plt.tick_params(axis='both', which='major', labelsize=12)
+    
+    # 添加统计信息
+    r2 = r2_score(vis_df['true'], vis_df['pred'])
+    rmse = np.sqrt(mean_squared_error(vis_df['true'], vis_df['pred']))
+    mae = mean_absolute_error(vis_df['true'], vis_df['pred'])
+    
+    stats_text = (f"R2: {r2:.4f}\n"
+                 f"RMSE: {rmse:.2f} ug/m3\n"
+                 f"MAE: {mae:.2f} ug/m3\n"
+                 f"样本数: {len(vis_df)}")
+    
+    plt.annotate(stats_text, xy=(0.02, 0.95), xycoords='axes fraction',
+                bbox=dict(boxstyle="round,pad=0.5", facecolor='white', alpha=0.8),
+                fontsize=12, verticalalignment='top')
+    
+    plt.tight_layout(pad=2.0)
+    plt.savefig(f"{output_dir}/pred_vs_true_scatter.png", dpi=300, bbox_inches='tight')
+    plt.savefig(f"{output_dir}/pred_vs_true_scatter.pdf", format='pdf', bbox_inches='tight')
     plt.close()
     
     # 2. 时间序列对比图
     if 'datetime' in vis_df.columns:
         # 使用一部分数据以避免图太密集
         if len(vis_df) > 1000:
-            # 按月抽样
+            # 按月抽样以保持时间分布
             vis_df['month'] = vis_df['datetime'].dt.to_period('M')
             sample_df = vis_df.groupby('month').apply(lambda x: x.sample(min(30, len(x)))).reset_index(drop=True)
             sample_df = sample_df.sort_values('datetime')
         else:
             sample_df = vis_df
         
-        plt.figure(figsize=(15, 8))
-        plt.plot(sample_df['datetime'], sample_df['true'], 'b-', label='真实值')
-        plt.plot(sample_df['datetime'], sample_df['pred'], 'r-', label='预测值')
-        plt.xlabel('日期')
-        plt.ylabel('PM2.5浓度 (μg/m³)')
-        plt.title('PM2.5浓度预测时间序列对比')
-        plt.legend()
-        plt.grid(alpha=0.3)
-        plt.tight_layout()
-        plt.savefig(f"{output_dir}/pred_vs_true_timeseries.png", dpi=300)
+        plt.figure(figsize=(16, 10))
+        
+        # 绘制真实值和预测值，使用更好的颜色和线宽
+        plt.plot(sample_df['datetime'], sample_df['true'], 'o-', 
+                color='#3498db', linewidth=2, markersize=6, alpha=0.7, label='真实值')
+        plt.plot(sample_df['datetime'], sample_df['pred'], 'o-', 
+                color='#e74c3c', linewidth=2, markersize=6, alpha=0.7, label='预测值')
+        
+        # 添加误差带
+        plt.fill_between(sample_df['datetime'], 
+                        sample_df['pred'] - sample_df['abs_error'], 
+                        sample_df['pred'] + sample_df['abs_error'], 
+                        color='#e74c3c', alpha=0.2)
+        
+        # 设置轴标签和标题
+        plt.xlabel('日期', fontsize=14, labelpad=10, color='#333333')
+        plt.ylabel('PM2.5浓度 (ug/m3)', fontsize=14, labelpad=10, color='#333333')
+        plt.title('PM2.5浓度预测时间序列对比', fontsize=18, pad=20, fontweight='bold', color='#333333')
+        
+        # 添加图例和网格
+        plt.legend(fontsize=14, loc='upper right')
+        plt.grid(alpha=0.3, linestyle='--')
+        plt.tick_params(axis='both', which='major', labelsize=12)
+        
+        # 自动格式化日期标签
+        fig = plt.gcf()
+        fig.autofmt_xdate()
+        
+        # 添加注释，说明只显示了部分数据点
+        if len(vis_df) > len(sample_df):
+            plt.figtext(0.5, 0.01, 
+                      f"注: 为保持清晰度，图表只显示了{len(sample_df)}个采样点（总共{len(vis_df)}个数据点）", 
+                      ha='center', fontsize=10, 
+                      bbox=dict(facecolor='#eeeeee', alpha=0.5, boxstyle='round,pad=0.5'))
+        
+        plt.tight_layout(pad=2.0)
+        plt.savefig(f"{output_dir}/pred_vs_true_timeseries.png", dpi=300, bbox_inches='tight')
+        plt.savefig(f"{output_dir}/pred_vs_true_timeseries.pdf", format='pdf', bbox_inches='tight')
         plt.close()
         
         # 3. 误差随时间变化图
-        plt.figure(figsize=(15, 8))
-        plt.scatter(sample_df['datetime'], sample_df['error'], alpha=0.6)
-        plt.axhline(y=0, color='r', linestyle='-')
-        plt.xlabel('日期')
-        plt.ylabel('预测误差 (μg/m³)')
-        plt.title('PM2.5预测误差随时间变化')
-        plt.grid(alpha=0.3)
-        plt.tight_layout()
-        plt.savefig(f"{output_dir}/prediction_error_timeseries.png", dpi=300)
+        plt.figure(figsize=(16, 8))
+        
+        # 创建渐变颜色映射
+        cmap = plt.cm.coolwarm
+        norm = plt.Normalize(vis_df['error'].min(), vis_df['error'].max())
+        colors = [cmap(norm(err)) for err in sample_df['error']]
+        
+        # 绘制误差点
+        plt.scatter(sample_df['datetime'], sample_df['error'], 
+                   c=colors, s=50, alpha=0.7, edgecolor='white', linewidth=0.5)
+        
+        # 添加零线和移动平均线
+        plt.axhline(y=0, color='#2c3e50', linestyle='-', linewidth=1.5)
+        
+        # 计算并绘制移动平均误差
+        window = min(30, len(sample_df) // 5)
+        sample_df['error_ma'] = sample_df['error'].rolling(window=window, center=True).mean()
+        plt.plot(sample_df['datetime'], sample_df['error_ma'], 
+               'r-', linewidth=2, label=f'{window}点移动平均')
+        
+        # 设置轴标签和标题
+        plt.xlabel('日期', fontsize=14, labelpad=10, color='#333333')
+        plt.ylabel('预测误差 (ug/m3)', fontsize=14, labelpad=10, color='#333333')
+        plt.title('PM2.5预测误差随时间变化', fontsize=18, pad=20, fontweight='bold', color='#333333')
+        
+        # 添加网格和图例
+        plt.grid(alpha=0.3, linestyle='--')
+        plt.legend(fontsize=12)
+        plt.tick_params(axis='both', which='major', labelsize=12)
+        
+        # 自动格式化日期标签
+        fig = plt.gcf()
+        fig.autofmt_xdate()
+        
+        plt.tight_layout(pad=2.0)
+        plt.savefig(f"{output_dir}/prediction_error_timeseries.png", dpi=300, bbox_inches='tight')
+        plt.savefig(f"{output_dir}/prediction_error_timeseries.pdf", format='pdf', bbox_inches='tight')
         plt.close()
         
-        # 4. 按月份的误差箱线图
+        # 4. 各月份误差箱线图
         vis_df['month'] = vis_df['datetime'].dt.month
-        plt.figure(figsize=(12, 6))
-        sns.boxplot(x='month', y='abs_error', data=vis_df)
-        plt.xlabel('月份')
-        plt.ylabel('绝对误差 (μg/m³)')
-        plt.title('各月份的预测误差分布')
-        plt.grid(alpha=0.3)
-        plt.tight_layout()
-        plt.savefig(f"{output_dir}/prediction_error_by_month.png", dpi=300)
+        
+        plt.figure(figsize=(16, 8))
+        
+        # 修复palette警告，使用hue参数
+        ax = sns.boxplot(x='month', y='abs_error', data=vis_df,
+                       hue='month',  # 添加hue参数
+                       palette=list(month_colors),  # 将颜色转换为列表
+                       width=0.6, linewidth=1.2,
+                       legend=False)  # 不显示图例
+        
+        # 添加散点显示实际分布
+        sns.stripplot(x='month', y='abs_error', data=vis_df.sample(min(500, len(vis_df))), 
+                     size=3, color='black', alpha=0.4, jitter=True)
+        
+        # 设置月份标签
+        month_names = ['一月', '二月', '三月', '四月', '五月', '六月', 
+                      '七月', '八月', '九月', '十月', '十一月', '十二月']
+        plt.xticks(range(12), month_names, rotation=45, ha='right')
+        
+        # 设置轴标签和标题
+        plt.xlabel('月份', fontsize=14, labelpad=10, color='#333333')
+        plt.ylabel('绝对误差 (ug/m3)', fontsize=14, labelpad=10, color='#333333')
+        plt.title('各月份的PM2.5预测误差分布', fontsize=18, pad=20, fontweight='bold', color='#333333')
+        
+        # 添加网格线
+        plt.grid(axis='y', linestyle='--', alpha=0.7)
+        plt.tick_params(axis='both', which='major', labelsize=12)
+        
+        # 计算每月平均误差并添加标注
+        monthly_means = vis_df.groupby('month')['abs_error'].mean()
+        for i, mean_val in enumerate(monthly_means):
+            plt.text(i, mean_val*1.05, f'{mean_val:.1f}', 
+                    ha='center', fontsize=10,
+                    bbox=dict(facecolor='white', alpha=0.7, boxstyle='round,pad=0.3'))
+        
+        plt.tight_layout(pad=2.0)
+        plt.savefig(f"{output_dir}/prediction_error_by_month.png", dpi=300, bbox_inches='tight')
+        plt.savefig(f"{output_dir}/prediction_error_by_month.pdf", format='pdf', bbox_inches='tight')
         plt.close()
     
     # 5. 误差分布直方图
-    plt.figure(figsize=(10, 6))
-    sns.histplot(vis_df['error'], kde=True, bins=50)
-    plt.xlabel('预测误差 (μg/m³)')
-    plt.ylabel('频次')
-    plt.title('PM2.5预测误差分布')
-    plt.grid(alpha=0.3)
-    plt.tight_layout()
-    plt.savefig(f"{output_dir}/prediction_error_histogram.png", dpi=300)
+    plt.figure(figsize=(14, 8))
+    
+    # 使用seaborn的更美观的直方图 - 完全修复KDE兼容性问题
+    ax = sns.histplot(vis_df['error'], kde=True, bins=50, 
+                color='#3498db', 
+                alpha=0.7, edgecolor='white', linewidth=0.5)
+    
+    # 手动设置KDE线的样式
+    if len(ax.lines) > 0:  # 检查是否存在KDE线条
+        ax.lines[0].set_color('#e74c3c')  # 设置KDE线的颜色
+        ax.lines[0].set_linewidth(2.5)    # 设置KDE线的宽度
+    
+    # 添加均值和中位数线
+    mean_error = vis_df['error'].mean()
+    median_error = vis_df['error'].median()
+    
+    plt.axvline(x=mean_error, color='#27ae60', linestyle='--', linewidth=2, 
+               label=f'均值: {mean_error:.2f}')
+    plt.axvline(x=median_error, color='#8e44ad', linestyle='--', linewidth=2, 
+               label=f'中位数: {median_error:.2f}')
+    plt.axvline(x=0, color='#2c3e50', linestyle='-', linewidth=2,
+               label='无误差')
+    
+    # 设置轴标签和标题
+    plt.xlabel('预测误差 (ug/m3)', fontsize=14, labelpad=10, color='#333333')
+    plt.ylabel('频次', fontsize=14, labelpad=10, color='#333333')
+    plt.title('PM2.5预测误差分布', fontsize=18, pad=20, fontweight='bold', color='#333333')
+    
+    # 添加误差统计信息
+    stats_text = (f"均值: {mean_error:.2f} ug/m3\n"
+                 f"中位数: {median_error:.2f} ug/m3\n"
+                 f"标准差: {vis_df['error'].std():.2f} ug/m3\n"
+                 f"最小值: {vis_df['error'].min():.2f} ug/m3\n"
+                 f"最大值: {vis_df['error'].max():.2f} ug/m3")
+    
+    plt.annotate(stats_text, xy=(0.02, 0.95), xycoords='axes fraction',
+                bbox=dict(boxstyle="round,pad=0.5", facecolor='white', alpha=0.8),
+                fontsize=12, verticalalignment='top')
+    
+    # 添加图例
+    plt.legend(fontsize=12)
+    
+    # 添加网格线
+    plt.grid(alpha=0.3, linestyle='--')
+    plt.tick_params(axis='both', which='major', labelsize=12)
+    
+    plt.tight_layout(pad=2.0)
+    plt.savefig(f"{output_dir}/prediction_error_histogram.png", dpi=300, bbox_inches='tight')
+    plt.savefig(f"{output_dir}/prediction_error_histogram.pdf", format='pdf', bbox_inches='tight')
     plt.close()
+    
+    print(f"预测结果可视化图表已保存至 {output_dir} 目录")
 
 def main():
     """

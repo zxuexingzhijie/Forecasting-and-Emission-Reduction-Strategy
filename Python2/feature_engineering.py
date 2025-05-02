@@ -652,21 +652,69 @@ def visualize_feature_importance(importance_df, top_n=20, output_dir="./processe
     # 确保top_n不超过可用特征数量
     top_n = min(top_n, len(importance_df_abs))
     
+    # 设置matplotlib样式
+    plt.style.use('seaborn-v0_8-whitegrid')
+    
+    # 全局字体设置，解决中文显示问题
+    plt.rcParams['font.sans-serif'] = ['SimHei', 'Microsoft YaHei', 'KaiTi', 'STSong', 'SimSun']
+    plt.rcParams['axes.unicode_minus'] = False  # 正确显示负号
+    plt.rcParams['figure.figsize'] = (12, 10)   # 默认图大小
+    plt.rcParams['figure.dpi'] = 100            # 默认DPI
+    
     # 绘制特征重要性条形图
-    plt.figure(figsize=(12, 8))
+    plt.figure(figsize=(14, 12))
     top_features = importance_df_abs.head(top_n).sort_values('importance')
-    plt.barh(top_features['feature'], top_features['importance'], color='skyblue')
-    plt.title(f'特征重要性 (Top {top_n})')
-    plt.xlabel('相关系数绝对值')
-    plt.ylabel('特征名称')
-    plt.grid(True, alpha=0.3)
-    plt.tight_layout()
-    plt.savefig(f"{output_dir}/feature_importance.png", dpi=300)
+    
+    # 创建颜色渐变
+    colors = plt.cm.viridis(np.linspace(0.1, 0.9, len(top_features)))
+    
+    # 设置背景颜色和网格线
+    ax = plt.gca()
+    ax.set_facecolor('#f5f5f5')
+    ax.grid(True, linestyle='--', alpha=0.7, color='white')
+    
+    # 绘制水平条形图
+    bars = plt.barh(top_features['feature'], top_features['importance'], 
+             color=colors, 
+             edgecolor='gray', 
+             alpha=0.8,
+             linewidth=0.5)
+    
+    # 在条形图末端添加数值标签
+    for bar in bars:
+        width = bar.get_width()
+        label_x_pos = width * 1.01
+        plt.text(label_x_pos, bar.get_y() + bar.get_height()/2, f'{width:.3f}',
+                va='center', ha='left', fontsize=10, color='#333333')
+    
+    # 添加标题和轴标签，使用更好的字体和颜色
+    plt.title('特征重要性排名 (Top {})'.format(top_n), 
+              fontsize=18, pad=20, fontweight='bold', color='#333333')
+    plt.xlabel('相关系数绝对值', fontsize=14, labelpad=10, color='#333333')
+    plt.ylabel('特征名称', fontsize=14, labelpad=10, color='#333333')
+    
+    # 设置刻度标签字体大小和颜色
+    plt.tick_params(axis='both', which='major', labelsize=12, colors='#333333')
+    
+    # 添加边框
+    for spine in plt.gca().spines.values():
+        spine.set_edgecolor('#dddddd')
+        
+    # 增加内边距，美化布局
+    plt.tight_layout(pad=3.0)
+    
+    # 保存高分辨率图片
+    plt.savefig(f"{output_dir}/feature_importance.png", dpi=300, bbox_inches='tight')
+    
+    # 保存额外的PDF格式以获得更好的矢量图质量
+    plt.savefig(f"{output_dir}/feature_importance.pdf", format='pdf', bbox_inches='tight')
+    
     plt.close()
     
     # 保存特征重要性到CSV
     importance_df.to_csv(f"{output_dir}/feature_importance.csv", index=False)
     print(f"特征重要性已保存至 {output_dir}/feature_importance.csv")
+    print(f"特征重要性图表已保存至 {output_dir}/feature_importance.png 和 {output_dir}/feature_importance.pdf")
 
 def save_features_info(processed_df, importance_df, output_dir="./processed2"):
     """
